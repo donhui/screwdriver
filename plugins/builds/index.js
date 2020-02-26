@@ -545,6 +545,9 @@ async function getParentBuildStatus({ newBuild, joinListNames, pipelineId, build
     let hasFailure = false;
     const promisesToAwait = [];
 
+    console.log('----get parent build status----');
+    console.log('joinListNames: ', joinListNames);
+
     // Get buildId
     for (let i = 0; i < joinListNames.length; i += 1) {
         const name = joinListNames[i];
@@ -579,6 +582,9 @@ async function getParentBuildStatus({ newBuild, joinListNames, pipelineId, build
             done = false;
         }
     });
+
+    console.log('hasFailure: ', hasFailure);
+    console.log('done: ', done);
 
     return { hasFailure, done };
 }
@@ -764,6 +770,7 @@ async function createOrRunNextBuild({ buildFactory, jobFactory, eventFactory, pi
     if (!nextBuild) {
         if (isExternal) {
             externalBuildConfig.start = false;
+            console.log('createExternalBuild in createOrRunNextBuild');
             newBuild = await createExternalBuild(externalBuildConfig);
         } else {
             internalBuildConfig.start = false;
@@ -851,6 +858,8 @@ exports.register = (server, options, next) => {
             return obj;
         }, {});
 
+        console.log('currentJobName: ', currentJobName);
+
         // Use old flow if external join flag is off
         if (!externalJoin) {
             return Promise.all(Object.keys(joinObj).map((nextJobName) => {
@@ -887,6 +896,51 @@ exports.register = (server, options, next) => {
             }));
         }
 
+        console.log('joinObj: ', joinObj);
+
+        // Get all external job names that do not have a join
+        const externalJobNamesWithNoJoinArr = Object.keys(joinObj).filter(jName =>
+            EXTERNAL_TRIGGER_ALL.test(jName) && joinObj[jName].length === 0);
+
+        console.log('externalJobNamesWithNoJoinArr: ', externalJobNamesWithNoJoinArr);
+
+        const externalJobPipelineIds = externalJobNamesWithNoJoinArr.map(n =>
+            EXTERNAL_TRIGGER_ALL.exec(n)[1]);
+
+        console.log('externalJobNamesWithNoJoinArr: ', externalJobNamesWithNoJoinArr);
+
+        const uniqPipelineIds = externalJobPipelineIds
+            .map(pid => ({ count: 1, pid }))
+            .reduce((a, b) => {
+                a[b.pid] = (a[b.pid] || 0) + b.count;
+
+                return a;
+            }, {});
+
+        const duplicatePipelineIds = Object.keys(uniqPipelineIds)
+            .filter(a => uniqPipelineIds[a] > 1);
+
+        console.log('duplicatePipelineIds: ', duplicatePipelineIds);
+
+        // Handle external events
+        // if no join array and external and pipeline the same, should be same event
+        if (duplicatePipelineIds.length > 0) {
+            return Promise.all(duplicatePipelineIds.forEach(id =>
+                // remove id from joinObj
+                //
+
+                return createExternalBuild({
+                    pipelineFactory,
+                    eventFactory,
+                    externalPipelineId: id,
+                    externalJobName: `~sd@${pipelineId}:${currentJobName}`,
+                    parentBuildId: build.id,
+                    parentBuilds: build.parentBuilds,
+                    causeMessage: `Triggered by sd@${pipelineId}:${currentJobName}`,
+                    parentEventId: event.id
+                })));
+        }
+
         // New implementation that allows external join (if external join flag is on)
         return Promise.all(Object.keys(joinObj).map(async (nextJobName) => {
             const {
@@ -918,6 +972,7 @@ exports.register = (server, options, next) => {
              *    joinList doesn't include sd@111:D, so start A
              */
             if (joinListNames.length === 0 || currentJobNotInJoinList) {
+                console.log('----no join case----');
                 // Next build is internal
                 if (!isExternal) {
                     const internalBuildConfig = {
@@ -964,6 +1019,8 @@ exports.register = (server, options, next) => {
                     let finishedInternalBuilds = await getFinishedBuilds(
                         externalEvent, eventFactory);
 
+                    console.log('----parent build match----');
+
                     if (externalEventId) {
                         const parallelBuilds = await getParallelBuilds({
                             eventFactory,
@@ -971,7 +1028,11 @@ exports.register = (server, options, next) => {
                             pipelineId: externalEvent.pipelineId
                         });
 
+                        console.log('externalEventId: ', externalEventId);
+
                         finishedInternalBuilds = finishedInternalBuilds.concat(parallelBuilds);
+
+                        console.log('parentBuilds: ', parentBuilds);
 
                         Object.keys(parentBuilds).forEach((pid) => {
                             parentBuilds[pid].eventId = event.id;
@@ -1006,6 +1067,8 @@ exports.register = (server, options, next) => {
                         // if restart case, should create event
                         if (previousBuild) {
                             parentBuildsForJoin = previousBuild.parentBuilds;
+
+                            console.log('createExternalBuild when previousBuild exists');
 
                             const newEvent = await createExternalBuild({
                                 pipelineFactory,
@@ -1094,6 +1157,8 @@ exports.register = (server, options, next) => {
                     const joinListNamesForJoin = joinListForJoin ?
                         joinListForJoin.map(j => j.name) : [];
 
+                    console.log('joinListNamesForJoin2: ', joinListNamesForJoin);
+
                     /* CHECK IF ALL PARENTBUILDS OF NEW BUILD ARE DONE */
                     const { hasFailure, done } = await getParentBuildStatus({
                         newBuild,
@@ -1126,8 +1191,12 @@ exports.register = (server, options, next) => {
                     externalBuildConfig.parentEventId = event.id;
                 }
 
+                console.log('createExternalBuild since external job is not join job');
+
                 return createExternalBuild(externalBuildConfig);
             }
+
+            console.log('----create or run next build----');
 
             // Handle join case
             return createOrRunNextBuild({ buildFactory,
